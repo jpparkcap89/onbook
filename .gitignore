@@ -1,0 +1,5 @@
+.clasp.json
+.clasprc.json
+.claude/
+node_modules/
+*.pdf
