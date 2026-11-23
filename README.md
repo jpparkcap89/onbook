@@ -22,7 +22,8 @@ onebook/
 ├─ assets/config.js      # GAS 웹앱 주소(apiUrl)
 ├─ data/books.json       # 책·차시·활동 흐름·활동지 문항
 ├─ gas/Code.gs           # Apps Script 백엔드(API)
-├─ gas/appsscript.json
+├─ gas/appsscript.json  # (clasp를 쓸 때만 필요)
+├─ SETUP.md            # 시트·웹앱 연결 안내
 └─ claude/               # 설계 문서와 1차 시안
 ```
 
@@ -51,20 +52,9 @@ onebook/
 python -m http.server 8000
 ```
 
-## 백엔드 배포(clasp)
+## 백엔드 연결
 
-```bash
-npm i -g @google/clasp
-clasp login
-cd gas
-clasp create --type sheets --title "한책읽기 포털 DB" --rootDir .
-clasp push
-clasp deploy --description "v1"
-```
-
-1. 스크립트 편집기에서 `setup` 함수를 한 번 실행하면 시트 탭과 머리글이 만들어지고, 교사 관리 코드가 Script Properties에 저장됩니다.
-2. 배포한 웹앱 주소(`.../exec`)를 `assets/config.js`의 `apiUrl`에 넣습니다.
-3. 시트 `classes` 탭에 학년·반·반 코드를 넣습니다.
+구글 시트의 **확장 프로그램 → Apps Script**에 `gas/Code.gs`를 붙여 넣고 웹앱으로 배포합니다. 순서는 [SETUP.md](SETUP.md)를 보세요.
 
 ## 개인정보
 
