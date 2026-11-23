@@ -52,7 +52,7 @@
 
   /* ---------- 공통 조각 ---------- */
   function nav(cur) {
-    const items = [['home', '홈'], ...DATA.books.map(b => [b.id, b.grade]), ['author', '작가 소개']];
+    const items = [['home', '홈'], ...DATA.books.map(b => [b.id, b.grade]), ['author', '작가 소개'], ['admin', '🔐 관리']];
     $('#nav').innerHTML = items.map(([h, t]) => `<a href="#${h}" class="${cur === h ? 'on' : ''}"${cur === h ? ' aria-current="page"' : ''}>${t}</a>`).join('');
   }
   const badges = types => `<span class="badges">${types.map(t => `<span class="bd ${t}">${DATA.types[t].icon} ${DATA.types[t].label}</span>`).join('')}</span>`;
@@ -304,69 +304,206 @@
       <div class="meta">${esc(String(x.createdAt || '').slice(0, 10))}</div></div>`;
   }
 
-  /* ---------- 교사 관리 ---------- */
-  let adminRows = [];
-  function adminView() {
-    nav('');
-    const code = store.sget('admin');
-    $('#app').innerHTML = `<section><div class="glass">
-      <span class="pill">🔐 교사 관리</span><h1 style="font-size:clamp(24px,3vw,32px)">제출물 확인·공개</h1>
-      <form class="filters" id="af">
-        <div style="min-width:200px"><label for="acode">교사 관리 코드</label><input id="acode" type="password" autocomplete="off" value="${esc(code)}"></div>
-        <div><label for="ab">책</label><select id="ab"><option value="">전체</option>${DATA.books.map(b => `<option value="${b.id}">${esc(b.title)}</option>`).join('')}<option value="author">작가 질문</option></select></div>
-        <div><label for="as">상태</label><select id="as"><option value="">전체</option><option selected>대기</option><option>공개</option><option>숨김</option></select></div>
-        <div><button class="btn sm" type="submit">불러오기</button></div>
-        <div><button class="btn sm sec" type="button" id="acsv">CSV 내보내기</button></div>
-        <div><button class="btn sm sec" type="button" id="aout">나가기</button></div>
-      </form>
-      <div class="msg" id="amsg" role="status" aria-live="polite"></div>
-      <div id="alist" class="fgrid"></div>
-    </div></section>`;
-    $('#af').onsubmit = ev => { ev.preventDefault(); adminLoad(); };
-    $('#aout').onclick = () => { store.sset('admin', ''); $('#acode').value = ''; $('#alist').innerHTML = ''; $('#amsg').textContent = ''; };
-    $('#acsv').onclick = exportCSV;
-    if (code) adminLoad();
+  /* ---------- 관리자 페이지 ---------- */
+  const AD = { rows: [], classes: [], sel: new Set(), tab: 'subs', f: { bookId: '', status: '', grade: '', classNo: '', q: '' }, loaded: false };
+  const adminCode = () => store.sget('admin');
+  async function adminCall(action, body = {}) {
+    const r = await apiPost(action, { adminCode: adminCode(), ...body });
+    if (r && !r.ok && /관리 코드|막혔/.test(r.error || '')) { store.sset('admin', ''); AD.loaded = false; }
+    return r || { ok: false, error: '응답이 없습니다.' };
   }
-  async function adminLoad() {
-    const code = $('#acode').value.trim(), msg = $('#amsg');
-    if (!code) { msg.textContent = '관리 코드를 넣어 주세요.'; msg.className = 'msg err'; return; }
-    msg.textContent = '불러오는 중…'; msg.className = 'msg';
+  function adminSay(t, ok) { const m = $('#amsg'); if (m) { m.textContent = t || ''; m.className = 'msg ' + (ok ? 'ok' : 'err'); } }
+  const bookTitle = id => { const b = book(id); return b ? b.title : (id === 'author' ? '작가 질문' : id); };
+
+  function adminView() {
+    nav('admin');
+    if (!adminCode()) return adminLogin();
+    $('#app').innerHTML = `<section>
+      <div class="glass">
+        <div class="ahead"><div><span class="pill">🔐 관리자 페이지</span><h1 style="font-size:clamp(24px,3vw,32px);margin-bottom:4px">한 책 읽기 관리</h1>
+          <p class="meta" style="margin:0">제출물 공개·삭제, 반 코드 관리, 시험용 더미 데이터를 다룹니다.</p></div>
+          <div class="abtns"><button class="btn sm sec" id="arefresh">↻ 새로고침</button><button class="btn sm sec" id="aout">나가기</button></div></div>
+        <div class="kpis" id="akpi"></div>
+        <div class="tabs" role="tablist">
+          ${[['subs', '📮 제출물'], ['classes', '🏫 반 관리'], ['tools', '🧰 데이터 도구']].map(([k, t]) => `<button role="tab" class="tab${AD.tab === k ? ' on' : ''}" data-tab="${k}" aria-selected="${AD.tab === k}">${t}</button>`).join('')}
+        </div>
+        <div class="msg" id="amsg" role="status" aria-live="polite"></div>
+        <div id="apanel"></div>
+      </div></section>`;
+    $('#aout').onclick = () => { store.sset('admin', ''); AD.loaded = false; AD.sel.clear(); adminLogin(); };
+    $('#arefresh').onclick = () => adminLoad(true);
+    document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { AD.tab = b.dataset.tab; adminView(); });
+    if (!AD.loaded) adminLoad(); else adminRender();
+  }
+
+  function adminLogin(err) {
+    $('#app').innerHTML = `<section><div class="glass" style="max-width:520px;margin:0 auto">
+      <span class="pill">🔐 관리자 페이지</span><h1 style="font-size:clamp(24px,3vw,30px)">관리 코드를 넣어 주세요</h1>
+      <form id="alogin" class="fgrid"><div><label for="acode">교사 관리 코드</label><input id="acode" type="password" autocomplete="current-password" required></div>
+      <div><button class="btn" type="submit">들어가기</button><div class="msg ${err ? 'err' : ''}" id="amsg" role="status">${esc(err || '')}</div></div>
+      <p class="hint">코드는 Apps Script → ⚙️ 프로젝트 설정 → 스크립트 속성의 <b>ADMIN_CODE</b> 값입니다.</p></form></div></section>`;
+    $('#alogin').onsubmit = async ev => {
+      ev.preventDefault();
+      const code = $('#acode').value.trim(); if (!code) return;
+      store.sset('admin', code); adminSay('확인하는 중…', true);
+      AD.loaded = false; await adminLoad();
+    };
+    setTimeout(() => $('#acode') && $('#acode').focus(), 50);
+  }
+
+  async function adminLoad(keepMsg) {
     try {
-      const r = await apiPost('admin.list', { adminCode: code, filters: { bookId: $('#ab').value, status: $('#as').value } });
-      if (!r || !r.ok) { msg.textContent = (r && r.error) || '불러오지 못했습니다.'; msg.className = 'msg err'; return; }
-      store.sset('admin', code);
-      adminRows = r.rows || [];
-      msg.textContent = `${adminRows.length}건`; msg.className = 'msg ok';
-      $('#alist').innerHTML = adminRows.length ? adminRows.map(adminRow).join('') : '<div class="empty">해당하는 제출물이 없습니다.</div>';
-      $('#alist').querySelectorAll('[data-act]').forEach(el => el.addEventListener('click', adminAct));
-    } catch (e) { msg.textContent = apiMsg(e); msg.className = 'msg err'; }
+      const [l, c] = await Promise.all([adminCall('admin.list', { filters: {} }), adminCall('admin.classes')]);
+      if (!l.ok) return adminLogin(l.error);
+      AD.rows = l.rows || []; AD.classes = c.ok ? c.rows : [];
+      const ids = new Set(AD.rows.map(r => r.id)); [...AD.sel].forEach(id => ids.has(id) || AD.sel.delete(id));
+      if (!AD.loaded) { AD.loaded = true; return adminView(); }
+      adminRender(); if (!keepMsg) adminSay('');
+    } catch (e) { adminSay(apiMsg(e)); }
+  }
+
+  function adminRender() {
+    const cnt = s => AD.rows.filter(r => r.status === s).length;
+    $('#akpi').innerHTML = [['전체', AD.rows.length, ''], ['대기', cnt('대기'), '대기'], ['공개', cnt('공개'), '공개'], ['숨김', cnt('숨김'), '숨김'], ['더미', AD.rows.filter(r => String(r.id).indexOf('dummy-') === 0).length, ''], ['반', AD.classes.length, '']]
+      .map(([t, n, s]) => `<button class="kpi" ${s ? `data-st="${s}"` : 'disabled'}><b>${n}</b><span>${t}</span></button>`).join('');
+    document.querySelectorAll('.kpi[data-st]').forEach(b => b.onclick = () => { AD.tab = 'subs'; AD.f.status = b.dataset.st; adminView(); });
+    ({ subs: panelSubs, classes: panelClasses, tools: panelTools })[AD.tab]();
+  }
+
+  /* 제출물 */
+  function filtered() {
+    const f = AD.f, q = f.q.trim();
+    return AD.rows.filter(r => (!f.bookId || r.bookId === f.bookId) && (!f.status || r.status === f.status) &&
+      (!f.grade || +r.grade === +f.grade) && (!f.classNo || +r.classNo === +f.classNo) &&
+      (!q || [r.content, r.nickname, r.teacherComment].join(' ').indexOf(q) >= 0));
+  }
+  function panelSubs() {
+    const f = AD.f, list = filtered();
+    const opt = (n, v) => '<option value="">전체</option>' + Array.from({ length: n }, (_, i) => `<option${+v === i + 1 ? ' selected' : ''}>${i + 1}</option>`).join('');
+    const selIn = list.filter(r => AD.sel.has(r.id)).length;
+    $('#apanel').innerHTML = `
+      <div class="filters">
+        <div><label for="fb">책</label><select id="fb"><option value="">전체</option>${DATA.books.map(b => `<option value="${b.id}"${f.bookId === b.id ? ' selected' : ''}>${esc(b.title)}</option>`).join('')}<option value="author"${f.bookId === 'author' ? ' selected' : ''}>작가 질문</option></select></div>
+        <div><label for="fs">상태</label><select id="fs"><option value="">전체</option>${['대기', '공개', '숨김'].map(s => `<option${f.status === s ? ' selected' : ''}>${s}</option>`).join('')}</select></div>
+        <div style="min-width:80px"><label for="fg2">학년</label><select id="fg2">${opt(6, f.grade)}</select></div>
+        <div style="min-width:80px"><label for="fc2">반</label><select id="fc2">${opt(15, f.classNo)}</select></div>
+        <div style="flex:1;min-width:160px"><label for="fq">검색</label><input id="fq" value="${esc(f.q)}" placeholder="내용·이름·댓글"></div>
+      </div>
+      <div class="bulk">
+        <label class="chk"><input type="checkbox" id="selall" ${list.length && selIn === list.length ? 'checked' : ''}> 보이는 ${list.length}건 모두 선택</label>
+        <span class="meta" id="selcount">선택 ${AD.sel.size}건</span>
+        <span class="abtns"><button class="btn sm" data-bulk="공개">선택 공개</button><button class="btn sm warn" data-bulk="숨김">선택 숨김</button><button class="btn sm danger" data-bulk="삭제">선택 삭제</button></span>
+      </div>
+      <div class="fgrid" id="alist">${list.length ? list.map(adminRow).join('') : '<div class="empty">해당하는 제출물이 없습니다.</div>'}</div>`;
+    const setF = (k, v) => { AD.f[k] = v; panelSubs(); };
+    $('#fb').onchange = e => setF('bookId', e.target.value);
+    $('#fs').onchange = e => setF('status', e.target.value);
+    $('#fg2').onchange = e => setF('grade', e.target.value);
+    $('#fc2').onchange = e => setF('classNo', e.target.value);
+    let t; $('#fq').oninput = e => { clearTimeout(t); t = setTimeout(() => { setF('q', e.target.value); const q = $('#fq'); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }, 300); };
+    $('#selall').onchange = e => { list.forEach(r => e.target.checked ? AD.sel.add(r.id) : AD.sel.delete(r.id)); panelSubs(); };
+    document.querySelectorAll('.rowchk').forEach(c => c.onchange = () => { c.checked ? AD.sel.add(c.value) : AD.sel.delete(c.value); $('#selcount').textContent = `선택 ${AD.sel.size}건`; });
+    document.querySelectorAll('[data-bulk]').forEach(b => b.onclick = () => bulk(b.dataset.bulk, b));
+    document.querySelectorAll('[data-act]').forEach(b => b.onclick = () => rowAct(b));
   }
   function adminRow(x) {
-    const b = book(x.bookId), title = b ? b.title : '작가 질문';
-    return `<div class="tile arow" data-id="${esc(x.id)}"><div>
-      <div class="meta"><span class="st ${esc(x.status)}">${esc(x.status)}</span> ${esc(title)}${+x.lesson ? ` · ${esc(x.lesson)}차시` : ''} · ${esc(x.type)} · ${esc(x.grade)}학년 ${esc(x.classNo)}반 ${esc(x.studentNo)}번 (${esc(x.nickname)}) · ${esc(String(x.createdAt).slice(0, 16).replace('T', ' '))}</div>
-      <div class="body" style="white-space:pre-wrap;margin-top:6px">${esc(x.content)}</div></div>
-      <div><label for="c-${esc(x.id)}">교사 댓글</label><textarea id="c-${esc(x.id)}" maxlength="500">${esc(x.teacherComment || '')}</textarea>
-      <div class="abtns"><button class="btn sm" data-act="공개">공개</button><button class="btn sm warn" data-act="숨김">숨김</button><button class="btn sm sec" data-act="대기">대기로</button></div></div></div>`;
+    const id = esc(x.id), dummy = String(x.id).indexOf('dummy-') === 0;
+    return `<div class="tile arow${AD.sel.has(x.id) ? ' picked' : ''}" data-id="${id}">
+      <div><div class="rowtop"><label class="chk"><input type="checkbox" class="rowchk" value="${id}" ${AD.sel.has(x.id) ? 'checked' : ''} aria-label="선택"></label>
+        <span class="st ${esc(x.status)}">${esc(x.status)}</span>${dummy ? '<span class="st 숨김">더미</span>' : ''}
+        <span class="meta">${esc(bookTitle(x.bookId))}${+x.lesson ? ` · ${esc(x.lesson)}차시` : ''} · ${esc(x.type)} · ${esc(x.grade)}학년 ${esc(x.classNo)}반 ${esc(x.studentNo)}번${x.nickname ? ` (${esc(x.nickname)})` : ''} · ${esc(String(x.createdAt).slice(0, 16).replace('T', ' '))}</span></div>
+        <div class="body" style="white-space:pre-wrap;margin-top:6px">${esc(x.content)}</div></div>
+      <div><label for="c-${id}">교사 댓글</label><textarea id="c-${id}" maxlength="500">${esc(x.teacherComment || '')}</textarea>
+        <div class="abtns"><button class="btn sm" data-act="공개">공개</button><button class="btn sm warn" data-act="숨김">숨김</button><button class="btn sm sec" data-act="대기">대기로</button><button class="btn sm danger" data-act="삭제" aria-label="이 제출물 삭제">삭제</button></div></div></div>`;
   }
-  async function adminAct(ev) {
-    const btn = ev.currentTarget, row = btn.closest('[data-id]'), id = row.dataset.id;
-    const comment = row.querySelector('textarea').value.trim();
+  async function rowAct(btn) {
+    const row = btn.closest('[data-id]'), id = row.dataset.id, act = btn.dataset.act;
+    if (act === '삭제' && !confirm('이 제출물을 지울까요? 되돌릴 수 없습니다.')) return;
     btn.disabled = true;
-    try {
-      const r = await apiPost('admin.update', { adminCode: store.sget('admin'), id, status: btn.dataset.act, teacherComment: comment });
-      if (r && r.ok) {
-        const x = adminRows.find(o => o.id === id); if (x) { x.status = btn.dataset.act; x.teacherComment = comment; }
-        const st = row.querySelector('.st'); st.textContent = btn.dataset.act; st.className = 'st ' + btn.dataset.act;
-      } else { $('#amsg').textContent = (r && r.error) || '저장하지 못했습니다.'; $('#amsg').className = 'msg err'; }
-    } catch (e) { $('#amsg').textContent = apiMsg(e); $('#amsg').className = 'msg err'; }
+    const r = act === '삭제' ? await adminCall('admin.delete', { ids: [id] })
+      : await adminCall('admin.update', { id, status: act, teacherComment: row.querySelector('textarea').value.trim() });
+    if (!r.ok) { btn.disabled = false; return adminSay(r.error); }
+    if (act === '삭제') { AD.rows = AD.rows.filter(o => o.id !== id); AD.sel.delete(id); adminSay('1건을 지웠습니다.', true); }
+    else { const o = AD.rows.find(o => o.id === id); if (o) { o.status = act; o.teacherComment = row.querySelector('textarea').value.trim(); } adminSay(`‘${act}’(으)로 바꿨습니다.`, true); }
+    adminRender();
+  }
+  async function bulk(act, btn) {
+    const ids = [...AD.sel];
+    if (!ids.length) return adminSay('먼저 제출물을 골라 주세요.');
+    if (act === '삭제' && !confirm(`선택한 ${ids.length}건을 지울까요? 되돌릴 수 없습니다.`)) return;
+    btn.disabled = true; adminSay('처리하는 중…', true);
+    const r = act === '삭제' ? await adminCall('admin.delete', { ids }) : await adminCall('admin.update', { ids, status: act });
     btn.disabled = false;
+    if (!r.ok) return adminSay(r.error);
+    if (act === '삭제') { AD.rows = AD.rows.filter(o => !AD.sel.has(o.id)); AD.sel.clear(); adminSay(`${r.deleted}건을 지웠습니다.`, true); }
+    else { AD.rows.forEach(o => { if (AD.sel.has(o.id)) o.status = act; }); adminSay(`${r.updated}건을 ‘${act}’(으)로 바꿨습니다.`, true); }
+    adminRender();
+  }
+
+  /* 반 관리 */
+  function panelClasses() {
+    const rows = AD.classes.length ? AD.classes : [];
+    $('#apanel').innerHTML = `
+      <p class="meta">학생은 제출할 때 학년·반과 함께 이 <b>반 코드</b>를 넣어야 합니다. 고친 뒤 <b>저장</b>을 눌러 주세요.</p>
+      <div class="ctable"><table><thead><tr><th>학년</th><th>반</th><th>담임 이름</th><th>담임 메일</th><th>반 코드</th><th></th></tr></thead>
+      <tbody id="ctb">${rows.map(classRow).join('')}</tbody></table></div>
+      <div class="abtns" style="margin-top:10px"><button class="btn sm sec" id="cadd">＋ 반 추가</button><button class="btn sm" id="csave">저장</button></div>`;
+    $('#cadd').onclick = () => { $('#ctb').insertAdjacentHTML('beforeend', classRow({})); bindDel(); };
+    $('#csave').onclick = async () => {
+      const rs = [...document.querySelectorAll('#ctb tr')].map(tr => { const v = k => tr.querySelector(`[data-k="${k}"]`).value.trim(); return { grade: v('grade'), classNo: v('classNo'), teacherName: v('teacherName'), teacherEmail: v('teacherEmail'), classCode: v('classCode') }; })
+        .filter(r => r.grade || r.classNo || r.classCode);
+      adminSay('저장하는 중…', true);
+      const r = await adminCall('admin.classes.save', { rows: rs });
+      if (!r.ok) return adminSay(r.error);
+      AD.classes = rs; adminSay(`반 ${r.saved}개를 저장했습니다.`, true); adminRender();
+    };
+    const bindDel = () => document.querySelectorAll('[data-cdel]').forEach(b => b.onclick = () => b.closest('tr').remove());
+    bindDel();
+  }
+  function classRow(r) {
+    const inp = (k, w, type = 'text') => `<input data-k="${k}" type="${type}" value="${esc(r[k] ?? '')}" style="min-width:${w}px" aria-label="${k}">`;
+    return `<tr><td>${inp('grade', 56, 'number')}</td><td>${inp('classNo', 56, 'number')}</td><td>${inp('teacherName', 90)}</td><td>${inp('teacherEmail', 150, 'email')}</td><td>${inp('classCode', 100)}</td><td><button class="btn sm danger" data-cdel aria-label="이 반 지우기">삭제</button></td></tr>`;
+  }
+
+  /* 데이터 도구 */
+  function panelTools() {
+    $('#apanel').innerHTML = `<div class="tools3">
+      <div class="tile"><h3>🧪 더미 데이터 만들기</h3><p class="meta">세 권에 나누어 감상·질문·작품을 만듭니다. 내용 앞에 <b>[더미]</b>가 붙고, 상태는 공개·대기·숨김이 섞입니다.</p>
+        <div class="abtns"><input id="dcount" type="number" min="1" max="200" value="30" style="width:90px" aria-label="만들 개수"><button class="btn sm" id="dseed">만들기</button></div></div>
+      <div class="tile"><h3>🧹 더미만 지우기</h3><p class="meta">더미로 만든 제출물만 지웁니다. 학생이 실제로 보낸 글은 그대로 둡니다.</p>
+        <button class="btn sm warn" id="dclear">더미 지우기</button></div>
+      <div class="tile danger-zone"><h3>⚠️ 전체 초기화</h3><p class="meta">제출물을 <b>모두</b> 지웁니다. 반 목록과 설정은 남습니다. 되돌릴 수 없으니 먼저 CSV로 내려받아 두세요.</p>
+        <div class="abtns"><input id="dconfirm" placeholder="초기화 라고 입력" style="width:160px" aria-label="확인 문구"><button class="btn sm danger" id="dreset">전체 초기화</button></div></div>
+      <div class="tile"><h3>📥 CSV 내보내기</h3><p class="meta">제출물 전체(${AD.rows.length}건)를 엑셀에서 열 수 있는 파일로 내려받습니다.</p>
+        <button class="btn sm sec" id="dcsv">내려받기</button></div></div>`;
+    $('#dseed').onclick = async e => {
+      e.target.disabled = true; adminSay('만드는 중…', true);
+      const r = await adminCall('admin.seed', { count: $('#dcount').value });
+      e.target.disabled = false; if (!r.ok) return adminSay(r.error);
+      await adminLoad(true); adminSay(`더미 ${r.created}건을 만들었습니다.`, true);
+    };
+    $('#dclear').onclick = async e => {
+      if (!confirm('더미 제출물을 모두 지울까요?')) return;
+      e.target.disabled = true;
+      const r = await adminCall('admin.reset', { scope: 'dummy' });
+      e.target.disabled = false; if (!r.ok) return adminSay(r.error);
+      AD.sel.clear(); await adminLoad(true); adminSay(`더미 ${r.deleted}건을 지웠습니다.`, true);
+    };
+    $('#dreset').onclick = async e => {
+      if ($('#dconfirm').value.trim() !== '초기화') return adminSay('확인 칸에 ‘초기화’라고 입력해 주세요.');
+      if (!confirm(`제출물 ${AD.rows.length}건을 모두 지웁니다. 계속할까요?`)) return;
+      e.target.disabled = true;
+      const r = await adminCall('admin.reset', { scope: 'all', confirm: '초기화' });
+      e.target.disabled = false; if (!r.ok) return adminSay(r.error);
+      AD.sel.clear(); await adminLoad(true); adminSay(`제출물 ${r.deleted}건을 지웠습니다.`, true);
+    };
+    $('#dcsv').onclick = exportCSV;
   }
   function exportCSV() {
-    if (!adminRows.length) { $('#amsg').textContent = '먼저 제출물을 불러와 주세요.'; return; }
+    if (!AD.rows.length) return adminSay('내려받을 제출물이 없습니다.');
     const cols = ['id', 'createdAt', 'bookId', 'lesson', 'grade', 'classNo', 'studentNo', 'nickname', 'type', 'content', 'status', 'teacherComment'];
     const cell = v => { let s = String(v ?? ''); if (/^[=+\-@]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };
-    const csv = '﻿' + [cols.join(','), ...adminRows.map(r => cols.map(c => cell(r[c])).join(','))].join('\r\n');
+    const csv = '﻿' + [cols.join(','), ...AD.rows.map(r => cols.map(c => cell(r[c])).join(','))].join('\r\n');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     a.download = `onebook_${new Date().toISOString().slice(0, 10)}.csv`;
